@@ -1,0 +1,223 @@
+from ibapi.client import EClient
+from ibapi.wrapper import EWrapper
+from ibapi.contract import Contract
+from ibapi.order import Order
+import threading
+import time
+import xlwings as xw
+
+book = xw.Book('Richspread.xlsx') 
+sht = book.sheets['Placing_Option']
+
+class StockContractApp(EWrapper, EClient):
+    def __init__(self):
+        EClient.__init__(self, self)
+    
+    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=None):
+        """Handle errors and informational messages."""
+        # Filter out informational messages (2104, 2106, 2158 are normal)
+        if errorCode in [2104, 2106, 2158]:
+            return  # Ignore market data farm messages
+        print(f"Error. ID: {reqId}, Code: {errorCode}, Msg: {errorString}")
+        if advancedOrderRejectJson:
+            print(f"Advanced Reject: {advancedOrderRejectJson}")
+
+    def contractDetails(self, reqId, contractDetails):
+        print(f"--- Stock Contract Details ---")
+        print(f"Symbol: {contractDetails.contract.symbol}")
+        print(f"conID: {contractDetails.contract.conId}")
+        print(f"Exchange: {contractDetails.contract.exchange}")
+        print(f"PrimaryExchange: {contractDetails.contract.primaryExchange}")
+        print(f"Long Name: {contractDetails.longName}")
+        print(f"Industry: {contractDetails.industry}")
+        print("-----------------------------")
+        sht.range('B10').value = contractDetails.contract.symbol
+        sht.range('B11').value = contractDetails.contract.conId
+        sht.range('B12').value = contractDetails.contract.exchange
+        sht.range('B13').value = contractDetails.contract.primaryExchange
+        sht.range('B14').value = contractDetails.longName
+        sht.range('B15').value = contractDetails.industry
+
+def main():
+    app = StockContractApp()
+    client_id = int(time.time()) % 10000
+    app.connect("127.0.0.1", 7497, clientId=client_id)
+
+    # Start socket in a separate thread
+    thread = threading.Thread(target=app.run, daemon=True)
+    thread.start()
+    time.sleep(1)
+    
+    # Define a stock contract using values from Excel
+    contract = Contract()
+    contract.symbol = sht.range('B3').value
+    contract.secType = sht.range('B4').value
+    contract.exchange = sht.range('B5').value
+    contract.currency = sht.range('B6').value
+
+    app.reqContractDetails(1, contract)
+    time.sleep(3)
+    app.disconnect()
+
+if __name__ == "__main__":
+    main()
+
+
+class OptionChainApp(EWrapper, EClient):
+    def __init__(self):
+        EClient.__init__(self, self)
+        self.exchange = None
+        self.trading_class = None
+        self.expirations = []
+        self.strikes = []
+        self.received_first = False
+        self.max_rows = 10  # can be increased if needed
+
+    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=None):
+        if errorCode in [2104, 2106, 2158]:
+            return
+        print(f"Error. ID: {reqId}, Code: {errorCode}, Msg: {errorString}")
+        if advancedOrderRejectJson:
+            print(f"Advanced Reject: {advancedOrderRejectJson}")
+
+    def securityDefinitionOptionParameter(self, reqId, exchange, underlyingConId, tradingClass, multiplier, expirations, strikes):
+        ticker = sht.range('B3').value.strip().upper()
+        if not self.received_first and tradingClass.upper() == ticker:
+            self.exchange = exchange
+            self.trading_class = tradingClass
+            self.expirations = [
+                f"{e[:4]}-{e[4:6]}-{e[6:]}" if len(e) == 8 and e.isdigit() else e
+                for e in sorted(list(expirations))
+            ]
+            self.strikes = sorted([float(s) for s in strikes])
+            self.received_first = True  # Only take the first one
+
+    def securityDefinitionOptionParameterEnd(self, reqId):
+        base_row = 19
+        sht.range(f'A{base_row}:Z{base_row+100}').clear_contents()
+        # Only write if we got an exchange
+        if self.exchange:
+            sht.range(f'A{base_row}').value = ['Exchange', 'Trading Class']
+            sht.range(f'A{base_row+1}').value = self.exchange
+            sht.range(f'B{base_row+1}').value = self.trading_class
+
+            # Expirations and strikes
+            exp_col = 3  # Column C
+            strike_col = exp_col + 1
+            sht.range((base_row, exp_col)).value = f"{self.exchange} Expirations"
+            sht.range((base_row, strike_col)).value = f"{self.exchange} Strikes"
+            for j, exp in enumerate(self.expirations):
+                sht.range((base_row+1+j, exp_col)).value = exp
+            for k, strike in enumerate(self.strikes):
+                sht.range((base_row+1+k, strike_col)).value = strike
+
+            sht.autofit()
+            print(f"Option chain request {reqId} (first exchange only) completed.")
+        else:
+            print("No matching exchange found.")
+        self.disconnect()
+
+def get_option_chain():
+    app = OptionChainApp()
+    app.connect("127.0.0.1", 7497, clientId=2)
+    thread = threading.Thread(target=app.run, daemon=True)
+    thread.start()
+    time.sleep(1)
+    underlying_conId = int(sht.range('B11').value)
+    app.reqSecDefOptParams(
+        reqId=1,
+        underlyingSymbol=sht.range('B3').value,
+        futFopExchange="",
+        underlyingSecType=sht.range('B4').value,
+        underlyingConId=underlying_conId
+    )
+    time.sleep(5)
+    app.disconnect()
+
+if __name__ == "__main__":
+    get_option_chain()
+
+class PlaceOptionOrderApp(EWrapper, EClient):
+    def __init__(self):
+        EClient.__init__(self, self)
+        
+    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=None):
+        """Handle errors and informational messages."""
+        # Filter out informational messages (2104, 2106, 2158 are normal)
+        if errorCode in [2104, 2106, 2158]:
+            return  # Ignore market data farm messages
+        print(f"Error. ID: {reqId}, Code: {errorCode}, Msg: {errorString}")
+        if advancedOrderRejectJson:
+            print(f"Advanced Reject: {advancedOrderRejectJson}")
+
+    def nextValidId(self, orderId):
+        # Define the option contract (example: AAPL 2024-07-19 200C)
+        contract = Contract()
+        contract.symbol = sht.range('B3').value
+        contract.secType = "OPT"
+        contract.exchange = sht.range('B5').value
+        contract.currency = sht.range('B6').value
+
+        # Ensure expiry is a string in YYYYMMDD format
+        expiry = sht.range('H3').value
+        if isinstance(expiry, (int, float)):
+            expiry = str(int(expiry))
+        elif isinstance(expiry, str):
+            expiry = expiry.strip()
+        contract.lastTradeDateOrContractMonth = expiry
+
+        
+        raw_strike = sht.range('F4').value
+       
+        contract.strike = float(raw_strike)
+
+        contract.right = sht.range('F5').value  # "C" for Call, "P" for Put
+        contract.multiplier = sht.range('F6').value
+
+        # Define the order
+        order = Order()
+        order.action = sht.range('F8').value
+        order.orderType = sht.range('F9').value
+        order.totalQuantity = sht.range('F10').value
+
+        self.placeOrder(orderId, contract, order)
+        print(
+            f"Placed order for {order.totalQuantity} contracts of "
+            f"{contract.symbol} {contract.lastTradeDateOrContractMonth} "
+            f"{contract.strike}{contract.right}"
+        )
+
+    def orderStatus(
+        self, orderId, status, filled, remaining, avgFillPrice,
+        permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice
+    ):
+        print(
+            f"OrderStatus. ID: {orderId}, Status: {status}, "
+            f"Filled: {filled}, Remaining: {remaining}, AvgFillPrice: {avgFillPrice}"
+        )
+
+    def openOrder(self, orderId, contract, order, orderState):
+        print(
+            f"OpenOrder. ID: {orderId}, Symbol: {contract.symbol}, "
+            f"Action: {order.action}, Quantity: {order.totalQuantity}"
+        )
+
+    def execDetails(self, reqId, contract, execution):
+        print(
+            f"ExecDetails. Symbol: {contract.symbol}, "
+            f"ExecId: {execution.execId}, Shares: {execution.shares}"
+        )
+
+def main():
+    app = PlaceOptionOrderApp()
+    app.connect("127.0.0.1", 7497, clientId=3)
+    thread = threading.Thread(target=app.run, daemon=True)
+    thread.start()
+
+    # give IB API a moment to send nextValidId & place the order
+    time.sleep(5)
+
+    app.disconnect()
+
+if __name__ == "__main__":
+    main()
