@@ -1,0 +1,76 @@
+# Connect to supersheet
+
+import xlwings as xw
+book = xw.Book('Richspread.xlsx')
+sht = book.sheets['BSM data']
+
+# Read the inputs
+sht.range('B2').value, sht.range('B3').value.strftime('%Y-%m-%d'), sht.range('B4').value, sht.range('B5').value
+
+import xlwings as xw
+from ibapi.client import EClient
+from ibapi.wrapper import EWrapper
+from ibapi.contract import Contract
+import threading
+import time
+
+class OptionGreeksApp(EWrapper, EClient):
+    def __init__(self):
+        EClient.__init__(self, self)
+        self.latest_greeks = None
+
+    def tickOptionComputation(self, reqId, tickType, tickAttrib, impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice):
+        # Only process model computation (tickType 13)
+        if tickType == 13:
+            print(f"ReqId: {reqId}, TickType: {tickType}, Implied Volatility: {impliedVol}")
+            print(f"Delta: {delta}, Option Price: {optPrice}, PV Dividend: {pvDividend}")
+            print(f"Gamma: {gamma}, Vega: {vega}, Theta: {theta}, Underlying Price: {undPrice}")
+            self.latest_greeks = [impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice]
+
+    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=""):
+        suppress_codes = [2104, 2106, 2158, 2108]
+        if errorCode in suppress_codes and "is OK" in errorString:
+            return  # Ignore common info messages
+        print(f"ERROR: {errorCode} = {errorString}")
+        
+
+book = xw.Book('Richspread.xlsx')
+sht = book.sheets['BSM data']
+symbol = sht.range('B2').value
+expiry = sht.range('B3').value.strftime('%Y%m%d')  # IBKR format: YYYYMMDD
+strike = sht.range('B4').value
+right = sht.range('B5').value        
+
+def create_option_contract(symbol, expiry, strike, right):
+    contract = Contract()
+    contract.symbol = symbol
+    contract.secType = "OPT"
+    contract.exchange = "SMART"
+    contract.currency = "USD"
+    contract.lastTradeDateOrContractMonth = expiry
+    contract.strike = strike
+    contract.right = right  # "C" for call, "P" for put
+    contract.multiplier = "100"
+    return contract
+
+
+# === IBKR App Startup ===
+app = OptionGreeksApp()
+app.connect("127.0.0.1", 7497, clientId=1)
+threading.Thread(target=app.run, daemon=True).start()
+time.sleep(5)  # Allow connection to establish
+
+option_contract = create_option_contract(symbol, expiry, strike, right)
+app.reqMktData(1, option_contract, "", False, False, [])
+
+try:
+    time.sleep(10)  
+finally:
+    app.disconnect()
+
+# === Write to Excel ===
+greeks = app.latest_greeks
+if greeks:
+    sht.range('A8').value = greeks
+else:
+    print("No data received")
