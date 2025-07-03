@@ -1,0 +1,111 @@
+pip install norm
+%pip install scipy
+
+import numpy as np
+import pandas as pd
+import datetime as dt
+import yfinance as yf
+import xlwings as xw
+import matplotlib.pyplot as plt
+from scipy.stats import norm
+
+book = xw.Book('Richspread.xlsx')
+sht = book.sheets['VAR_inputs']
+
+tickers = sht.range('B2:K2').value
+tickers = [t for t in tickers if t is not None]  # Remove any empty cells
+print(tickers)
+
+weights = sht.range('B12:AA12').value
+weights = [w for w in weights if w is not None]  # Remove any empty cells
+print(weights)
+
+
+endDate = sht.range('B8').value.strftime('%Y-%m-%d')
+startDate =sht.range('B6').value.strftime('%Y-%m-%d')
+
+
+close_df = pd.DataFrame()
+
+for ticker in tickers:
+    data = yf.download(ticker, start=startDate, end=endDate)
+    # Use 'Close' instead of 'Adj Close'
+    close_df[ticker] = data['Close']
+
+print(close_df)
+
+log_returns = np.log(close_df / close_df.shift(1))
+log_returns = log_returns.dropna()
+print(log_returns)
+
+
+def expected_return(weights, log_returns):
+    return np.sum(log_returns.mean()*weights)
+
+cov_matrix = log_returns.cov()
+print(cov_matrix)
+
+def standard_deviation (weights, cov_matrix):
+    variance = weights.T @ cov_matrix @ weights
+    return np.sqrt(variance)
+
+weights = np.array(weights)  
+
+
+weights = weights[:len(tickers)]
+
+Portfolio_value = sht.range('B10').value,  
+portfolio_expected_return = expected_return(weights, log_returns)
+portfolio_std_dev = standard_deviation(weights, cov_matrix)
+
+def random_z_score():
+    return np.random.normal(0, 1)
+
+days = sht.range('B14').value
+
+def scenario_gain_loss(portfolio_value, portfolio_expected_return, portfolio_std_dev, z_score, days):
+    return portfolio_value * portfolio_expected_return * days + portfolio_value * portfolio_std_dev * z_score * np.sqrt(days)
+
+def scenario_gain_loss(portfolio_value, portfolio_expected_return, portfolio_std_dev, z_score, days):
+    return portfolio_value * portfolio_expected_return * days + portfolio_value * portfolio_std_dev * z_score * np.sqrt(days)
+
+simulations = sht.range('B16').value
+scenarioReturn = []
+
+
+portfolio_value_scalar = Portfolio_value[0]
+
+for i in range(int(simulations)):
+    z_score = random_z_score()
+    scenarioReturn.append(scenario_gain_loss(portfolio_value_scalar, portfolio_expected_return, portfolio_std_dev, z_score, days))
+
+confidence_interval = sht.range('B18').value
+VaR =-np.percentile(scenarioReturn, 100*(1-confidence_interval))
+print(f"Value at Risk (VaR) at {confidence_interval*100}% confidence level: ${VaR:.2f}")
+
+n, bins, patches = plt.hist(scenarioReturn, bins=50, density=True, alpha=0.7)
+
+plt.xlabel('Scenario Gain/Loss ($)')
+plt.ylabel('Frequency')
+plt.title(f'Distribution of Portfolio Gain/Loss Over {days} Days')
+plt.axvline(-VaR, color='r', linestyle='dashed', linewidth=2, label=f'VaR at {confidence_interval:.0%} confidence level')
+
+
+for i in range(len(bins)-1):
+    if bins[i+1] < -VaR:
+        patches[i].set_facecolor('red')
+
+plt.legend()
+plt.savefig('var_hist.png')
+plt.show()
+
+book = xw.Book('Richspread.xlsx')
+portfolio = book.sheets['Portfolio']
+confidence_pct = int(confidence_interval * 100)
+statement = f"There is a {confidence_pct}% confidence that the portfolio will not lose more than ${VaR:,.2f} over {days} days."
+
+
+print(statement)
+
+portfolio.range('A24').value = statement
+portfolio.pictures.add('var_hist.png', name='VaR_Hist', update=True, left=portfolio.range('A25').left, top=portfolio.range('A25').top)
