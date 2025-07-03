@@ -1,0 +1,137 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import xlwings as xw
+
+# Read Excel inputs
+book = xw.Book('Richspread.xlsx')
+sht = book.sheets['MC_Stock_returns']
+
+# Get parameters from Excel
+symbol = sht.range('B2').value
+start_date = sht.range('B3').value
+end_date = sht.range('B4').value
+num_simulations = int(sht.range('B5').value)
+num_days = int(sht.range('B6').value)
+threshold = float(sht.range('B7').value)
+
+# Fetch data from Yahoo Finance
+ticker = yf.Ticker(symbol)
+data = ticker.history(start=start_date, end=end_date)
+
+if not data.empty:
+    # Prepare dataframe
+    df = pd.DataFrame()
+    df['date'] = data.index
+    df['close'] = data['Close'].astype(float).values
+    df = df.sort_values(by='date').reset_index(drop=True)
+
+    # Daily log returns
+    df['returns'] = np.log(df['close'] / df['close'].shift(1))
+    df = df.dropna()
+
+    mu_daily = df['returns'].mean()
+    sigma_daily = df['returns'].std()
+
+    annualised_mean = mu_daily * 252
+    annualised_vol = sigma_daily * np.sqrt(252)
+
+    print(f"Annualised Mean Return: {annualised_mean:.4f}")
+    print(f"Annualised Volatility: {annualised_vol:.4f}")
+
+    last_price = df['close'].iloc[-1]
+    simulation_results = np.zeros((num_days, num_simulations))
+
+    for i in range(num_simulations):
+        daily_returns = np.random.normal(mu_daily, sigma_daily, num_days)
+        price_path = last_price * np.exp(np.cumsum(daily_returns))
+        simulation_results[:, i] = price_path
+
+    final_prices = simulation_results[-1, :]
+    prob_above = np.mean(final_prices > threshold)
+    prob_below = np.mean(final_prices < threshold)
+
+    print(f"\nProbability of ending above ${threshold}: {prob_above:.2%}")
+    print(f"Probability of ending below ${threshold}: {prob_below:.2%}")
+
+
+# Reference the same workbook and sheet
+book = xw.Book('Richspread.xlsx')
+results_sht = book.sheets['MC_Stock_returns']
+
+# Optionally clear outputs below row 9
+results_sht.range('A10:Z1000').clear_contents()
+results_sht.range('G1:G1000').clear_contents()
+
+# Write simulation summary starting from row 10
+results_sht.range('A10').value = 'Annualised Mean Return'
+results_sht.range('B10').value = annualised_mean
+
+results_sht.range('A11').value = 'Annualised Volatility'
+results_sht.range('B11').value = annualised_vol
+
+results_sht.range('A13').value = f'Probability above ${threshold}'
+results_sht.range('B13').value = prob_above
+
+results_sht.range('A14').value = f'Probability below ${threshold}'
+results_sht.range('B14').value = prob_below
+
+# Histogram data
+counts, bin_edges = np.histogram(final_prices, bins=50)
+results_sht.range('D10').value = 'Histogram Bin Lower Edge'
+results_sht.range('E10').value = 'Frequency'
+results_sht.range('D11').options(transpose=True).value = bin_edges[:-1]
+results_sht.range('E11').options(transpose=True).value = counts
+
+import io
+
+# Create and save histogram figure
+plt.figure(figsize=(8, 5))
+plt.hist(final_prices, bins=50, color='skyblue', edgecolor='black')
+plt.title(f"Distribution of Final Simulated Prices for {symbol}")
+plt.xlabel("Final Price")
+plt.ylabel("Frequency")
+plt.grid(True)
+plt.tight_layout()
+
+# Insert histogram plot into Excel
+hist_pic = results_sht.pictures.add(plt.gcf(), 
+                                   name='histogram', 
+                                   update=True, 
+                                   left=results_sht.range('G1').left,
+                                   top=results_sht.range('G1').top)
+plt.close()
+
+# Create and save simulation paths figure
+plt.figure(figsize=(12, 7))
+n_to_plot = 50
+paths = np.random.choice(simulation_results.shape[1], n_to_plot, replace=False)
+for i in paths:
+    plt.plot(simulation_results[:, i], alpha=0.3, linewidth=0.7, color='tab:blue')
+
+mean_path = np.mean(simulation_results, axis=1)
+p5 = np.percentile(simulation_results, 5, axis=1)
+p95 = np.percentile(simulation_results, 95, axis=1)
+
+plt.plot(mean_path, color='black', label='Mean Path', linewidth=2)
+plt.fill_between(range(num_days), p5, p95, color='gray', alpha=0.3, label='5–95% Interval')
+plt.axhline(y=threshold, color='red', linestyle='--', label=f"Threshold (${threshold})")
+
+plt.title(f"Monte Carlo Simulation for {symbol}")
+plt.xlabel("Trading Days")
+plt.ylabel("Price")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+
+# Insert simulation paths plot into Excel
+paths_pic = results_sht.pictures.add(plt.gcf(), 
+                                    name='simulation_paths', 
+                                    update=True, 
+                                    left=results_sht.range('G30').left,
+                                    top=results_sht.range('G30').top)
+plt.close()
+
+# Save the workbook
+book.save()
