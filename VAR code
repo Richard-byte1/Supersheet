@@ -1,6 +1,5 @@
 pip install norm
 %pip install scipy
-
 import numpy as np
 import pandas as pd
 import datetime as dt
@@ -13,11 +12,11 @@ book = xw.Book('Richspread.xlsx')
 sht = book.sheets['VAR_inputs']
 
 tickers = sht.range('B2:K2').value
-tickers = [t for t in tickers if t is not None]  # Remove any empty cells
+tickers = [t for t in tickers if t is not None] 
 print(tickers)
 
 weights = sht.range('B12:AA12').value
-weights = [w for w in weights if w is not None]  # Remove any empty cells
+weights = [w for w in weights if w is not None] 
 print(weights)
 
 
