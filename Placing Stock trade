@@ -1,0 +1,79 @@
+from ibapi.contract import Contract
+from ibapi.order import Order
+from ibapi.client import EClient
+from ibapi.wrapper import EWrapper
+import xlwings as xw
+import threading
+import time
+
+book = xw.Book('Richspread.xlsx') 
+sht = book.sheets['Placing_Stock']
+#         
+
+class PlaceOrderApp(EWrapper, EClient):
+    def __init__(self):
+        EClient.__init__(self, self)
+
+    def nextValidId(self, orderId):
+        # Called by TWS once connection is established and ready to send orders
+        self.place_my_order(orderId)
+
+    def orderStatus(self, orderId, status, filled, remaining, avgFillPrice,
+                    permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):
+        print(f"OrderStatus. ID: {orderId}, Status: {status}, Filled: {filled}, Remaining: {remaining}, AvgFillPrice: {avgFillPrice}")
+
+    def openOrder(self, orderId, contract, order, orderState):
+        print(f"OpenOrder. ID: {orderId}, Symbol: {contract.symbol}, Action: {order.action}, Quantity: {order.totalQuantity}")
+        
+    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=None):
+        """Handle errors and informational messages."""
+        # Filter out informational messages (2104, 2106, 2158 are normal)
+        if errorCode in [2104, 2106, 2158]:
+            return  # Ignore market data farm messages
+        print(f"Error. ID: {reqId}, Code: {errorCode}, Msg: {errorString}")
+        if advancedOrderRejectJson:
+            print(f"Advanced Reject: {advancedOrderRejectJson}")
+
+    def execDetails(self, reqId, contract, execution):
+        print(f"ExecDetails. Symbol: {contract.symbol}, ExecId: {execution.execId}, Shares: {execution.shares}")
+
+    def place_my_order(self, orderId):
+        # Define the contract (AAPL stock)
+        contract = Contract()
+        contract.symbol = sht.range('B2').value
+        contract.secType = sht.range('B3').value
+        contract.exchange = sht.range('B4').value
+        contract.currency = sht.range('B5').value
+
+        # Market order (BUY)
+        order = Order()
+        order.action = sht.range('B9').value
+        order.orderType = sht.range('B10').value
+        order.totalQuantity = sht.range('B11').value
+        order.lmtPrice = sht.range('B12').value
+        order.sweepToFill = True
+        
+
+        self.placeOrder(orderId, contract, order)
+        print(f"Placed MARKET order for {order.totalQuantity} shares of {contract.symbol}")
+
+        # Stop order (SELL)
+        stop_order = Order()
+        stop_order.action = sht.range('B17').value
+        stop_order.orderType = sht.range('B18').value
+        stop_order.totalQuantity = sht.range('B19').value
+        stop_order.auxPrice = sht.range('B20').value
+
+        self.placeOrder(orderId + 1, contract, stop_order)
+        print(f"Placed STOP order for {stop_order.totalQuantity} shares of {contract.symbol} at ${stop_order.auxPrice}")
+
+def main():
+    app = PlaceOrderApp()
+    app.connect("127.0.0.1", 7497, 123)
+    thread = threading.Thread(target=app.run, daemon=True)
+    thread.start()
+    time.sleep(10)  # Wait for order to process
+    app.disconnect()
+
+if __name__ == "__main__":
+    main()
